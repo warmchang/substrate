@@ -70,15 +70,23 @@ func (r *runsc) cmdCreate(ctx context.Context, out io.Writer, containerName stri
 	return nil
 }
 
+// allowConnectedOnSave reports whether `runsc start` should be passed
+// -allow-connected-on-save. It defaults to true (preserving prior behavior) and
+// can be disabled with ATEOM_RUNSC_ALLOW_CONNECTED_ON_SAVE=false for runsc
+// builds that do not define the flag — some GKE-Sandbox releases reject it on
+// `runsc start` with "flag provided but not defined" (they handle connected
+// sockets via SaveRestoreNetstack instead).
+func allowConnectedOnSave() bool {
+	return os.Getenv("ATEOM_RUNSC_ALLOW_CONNECTED_ON_SAVE") != "false"
+}
+
 func (r *runsc) cmdStart(ctx context.Context, out io.Writer, containerName string) error {
 	reapLock.RLock()
 	defer reapLock.RUnlock()
 
 	slog.InfoContext(ctx, "About to run runsc start", slog.String("container", containerName))
 
-	cmd := exec.CommandContext(
-		ctx,
-		r.path,
+	args := []string{
 		"-log-format", "json",
 		"--alsologtostderr",
 		// "-debug",
@@ -86,11 +94,21 @@ func (r *runsc) cmdStart(ctx context.Context, out io.Writer, containerName strin
 		// "-debug-to-user-log",
 		// "-log-packets",
 		// "-strace",
-		"-allow-connected-on-save",
+	}
+	// -allow-connected-on-save lets runsc checkpoint a sandbox that still has
+	// open connected sockets. Some runsc builds (e.g. certain GKE-Sandbox
+	// releases) do not recognize the flag and reject `runsc start` with
+	// "flag provided but not defined", so it can be disabled by setting
+	// ATEOM_RUNSC_ALLOW_CONNECTED_ON_SAVE=false.
+	if allowConnectedOnSave() {
+		args = append(args, "-allow-connected-on-save")
+	}
+	args = append(args,
 		"-root", ateompath.RunSCStateDir(r.actorUID),
 		"start",
 		containerName, // Name of the container
 	)
+	cmd := exec.CommandContext(ctx, r.path, args...)
 	cmd.Stdout = out
 	cmd.Stderr = out
 

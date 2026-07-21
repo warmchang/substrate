@@ -17,6 +17,8 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"os"
+	"strconv"
 	"time"
 
 	"github.com/agent-substrate/substrate/internal/resources"
@@ -42,8 +44,29 @@ const (
 	// a readiness probe. Templates whose containers all declare readyz skip
 	// this wait — ResumeActor only returns once readyz reports 200, so the
 	// workload is already initialized by the time we get here.
+	//
+	// The default can be overridden with the ATE_GOLDEN_WARMUP_SECONDS env
+	// var: workloads with a long, probe-less initialization (e.g. a heavy
+	// multi-process runtime that keeps warming up well past the 20s default)
+	// otherwise get checkpointed before they are ready.
 	goldenSnapshotWarmup = 20 * time.Second
+
+	// goldenWarmupEnv overrides goldenSnapshotWarmup with a whole number of
+	// seconds when set to a valid, non-negative integer.
+	goldenWarmupEnv = "ATE_GOLDEN_WARMUP_SECONDS"
 )
+
+// defaultGoldenWarmup returns the golden-snapshot warmup delay, honoring the
+// ATE_GOLDEN_WARMUP_SECONDS env override and falling back to goldenSnapshotWarmup
+// when the var is unset or invalid.
+func defaultGoldenWarmup() time.Duration {
+	if v := os.Getenv(goldenWarmupEnv); v != "" {
+		if secs, err := strconv.Atoi(v); err == nil && secs >= 0 {
+			return time.Duration(secs) * time.Second
+		}
+	}
+	return goldenSnapshotWarmup
+}
 
 type ActorTemplateReconciler struct {
 	client.Client
@@ -199,11 +222,11 @@ func (r *ActorTemplateReconciler) SetupWithManager(mgr ctrl.Manager) error {
 func goldenSnapshotWarmupFor(at *atev1alpha1.ActorTemplate) time.Duration {
 	containers := at.Spec.Containers
 	if len(containers) == 0 {
-		return goldenSnapshotWarmup
+		return defaultGoldenWarmup()
 	}
 	for i := range containers {
 		if containers[i].Readyz == nil {
-			return goldenSnapshotWarmup
+			return defaultGoldenWarmup()
 		}
 	}
 	return 0
